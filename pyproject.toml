@@ -13,6 +13,7 @@ dependencies = []
 
 [project.scripts]
 toaster = "toaster.cli:main"
+toaster-gui = "toaster.gui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

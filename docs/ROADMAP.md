@@ -30,5 +30,6 @@ Ordered roughly by value. `[Rufus]` = a feature Rufus has; `[new]` = beyond Rufu
 - [ ] Download official ISOs from Microsoft with hash verification [Rufus has this via Fido]
 - [ ] `toaster explain`: describe in plain English what a profile will change [new]
 - [ ] Profile sharing: signed/versioned JSON profiles, `toaster diff a.json b.json` [new]
-- [ ] GTK/Qt front end on top of the same library [Rufus is GUI-first]
+- [x] Graphical interface (tkinter) on top of the CLI [Rufus is GUI-first]
+- [ ] GUI polish: remember settings, notice USB hot-plug, desktop packaging/icon, translations [new]
 - [ ] Multi-boot (several ISOs on one stick) [new]

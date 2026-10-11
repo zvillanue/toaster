@@ -184,6 +184,9 @@ def _prepare(source: Path, opts: Customizations, tree: Path) -> None:
         shutil.copytree(source, tree, dirs_exist_ok=True)
     else:
         media.extract_iso(source, tree)
+    if media.find_install_image(tree) is None:
+        raise ToolError(f"{source.name} does not look like Windows installation media "
+                        "(no sources/install.wim, .esd or .swm)")
     report = customize_tree(tree, opts, log=print)
     for action in report.actions:
         print(f"  + {action}")
@@ -229,6 +232,41 @@ def _resolve_target(a: argparse.Namespace) -> tuple[devices.Drive, bool]:
     return devices.find(a.device), True
 
 
+def _machine_progress(phase: str, done: int, total: int) -> None:
+    """One tab-separated line per update, for front ends that drive toaster as a subprocess."""
+    print(f"PROGRESS\t{phase}\t{done}\t{total}", flush=True)
+
+
+def _progress_for(a: argparse.Namespace):
+    return _machine_progress if getattr(a, "machine_progress", False) else _progress
+
+
+def cmd_gui(a: argparse.Namespace) -> int:
+    try:
+        from . import gui
+    except ImportError as e:        # tkinter is a separate package on most Linux distributions
+        raise ToolError(f"the graphical interface needs tkinter ({e})\n  Debian/Ubuntu: sudo apt install python3-tk") from None
+    return gui.main()
+
+
+def cmd_flash(a: argparse.Namespace) -> int:
+    """Write an already-prepared folder (from `toaster prepare`) to a drive or disk image."""
+    tree = Path(a.tree)
+    if not tree.is_dir():
+        raise ToolError(f"{tree} is not a folder (create one with `toaster prepare`)")
+    drive, existed = _resolve_target(a)
+    devices.check_target(drive, allow_fixed=a.allow_fixed, needed_bytes=media.tree_size(tree))
+    if existed and not a.yes:
+        typed = input(f"This replaces everything in {drive.path}. Type it again to confirm: ").strip()
+        if typed != drive.path:
+            print("Aborted; nothing was written.")
+            return 1
+    media.write_tree_to_device(tree, drive, label=a.label, boot=a.boot, allow_fixed=a.allow_fixed,
+                               verify=a.verify, progress=_progress_for(a))
+    print(f"Done. {drive.path} is ready to boot.")
+    return 0
+
+
 def cmd_write(a: argparse.Namespace) -> int:
     opts = _options_from_args(a)
     if opts.auto_partition and a.boot == "bios":
@@ -263,10 +301,21 @@ def cmd_write(a: argparse.Namespace) -> int:
                 print("Aborted; nothing was written.")
                 return 1
         media.write_tree_to_device(tree, drive, label=a.label, boot=a.boot, allow_fixed=a.allow_fixed,
-                                   verify=a.verify, progress=_progress)
+                                   verify=a.verify, progress=_progress_for(a))
     modes = "legacy BIOS and UEFI" if a.boot == "bios" else "UEFI"
     print(f"Done. {drive.path} is ready to boot ({modes}).")
     return 0
+
+
+def _add_target_args(s: argparse.ArgumentParser) -> None:
+    s.add_argument("--boot", choices=["uefi", "bios"], default="uefi",
+                   help="uefi: GPT (default). bios: MBR with syslinux boot code; boots legacy BIOS and UEFI")
+    s.add_argument("--image-size", metavar="SIZE", help="treat DEVICE as a disk image file, creating it at this size (e.g. 8G)")
+    s.add_argument("--label", default="WINSTALL")
+    s.add_argument("--verify", action="store_true", help="re-read the drive and compare checksums")
+    s.add_argument("--allow-fixed", action="store_true", help="permit a non-removable disk (still never the system disk)")
+    s.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
+    s.add_argument("--machine-progress", action="store_true", help=argparse.SUPPRESS)   # for the GUI
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -290,15 +339,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("source", help="Windows ISO or extracted folder"); s.add_argument("--out", required=True)
     _add_customization_args(s); s.set_defaults(func=cmd_prepare)
 
+    s = sub.add_parser("gui", help="open the graphical interface"); s.set_defaults(func=cmd_gui)
+
+    s = sub.add_parser("flash", help="write a folder made by `prepare` to a USB drive or disk image (USB needs root)")
+    s.add_argument("tree", help="folder created by `toaster prepare`")
+    s.add_argument("device", help="whole disk (/dev/sdb) or a disk image file")
+    _add_target_args(s)
+    s.set_defaults(func=cmd_flash)
+
     s = sub.add_parser("write", help="customize an ISO and write it to a USB drive or disk image (USB needs root)")
     s.add_argument("source", help="Windows ISO or extracted folder"); s.add_argument("device", help="whole disk (/dev/sdb) or a disk image file")
-    s.add_argument("--boot", choices=["uefi", "bios"], default="uefi",
-                   help="uefi: GPT (default). bios: MBR with syslinux boot code; boots legacy BIOS and UEFI")
-    s.add_argument("--image-size", metavar="SIZE", help="treat DEVICE as a disk image file, creating it at this size (e.g. 8G)")
-    s.add_argument("--label", default="WINSTALL"); s.add_argument("--workdir", help="where to stage files (needs ~1.3x the ISO size)")
-    s.add_argument("--verify", action="store_true", help="re-read the drive and compare checksums")
-    s.add_argument("--allow-fixed", action="store_true", help="permit a non-removable disk (still never the system disk)")
-    s.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
+    _add_target_args(s)
+    s.add_argument("--workdir", help="where to stage files (needs ~1.3x the ISO size)")
     _add_customization_args(s); s.set_defaults(func=cmd_write)
     return p
 

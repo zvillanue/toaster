@@ -258,3 +258,16 @@ class CliWriteImageTests(unittest.TestCase):
         loaded = Customizations.load(prof)
         self.assertEqual((loaded.editions, loaded.offline_debloat, loaded.secureboot_2023), ([2], True, True))
         self.assertEqual(loaded.drivers, [str(self.pack.resolve())])
+
+
+class NotWindowsMediaTests(unittest.TestCase):
+    def test_prepare_refuses_a_folder_that_is_not_windows_media(self):
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t) / "ubuntu"
+            (src / "casper").mkdir(parents=True)
+            (src / "casper" / "vmlinuz").write_bytes(b"x")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = cli.main(["prepare", str(src), "--out", str(Path(t) / "out")])
+        self.assertEqual(rc, 2)
+        self.assertIn("does not look like Windows installation media", err.getvalue())

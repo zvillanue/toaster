@@ -13,12 +13,31 @@ tools (`wimlib`, `hivex`, `syslinux`, `mtools`) plus standard disk utilities.
 ```sh
 # Debian/Ubuntu (package names differ elsewhere)
 sudo apt install wimtools libhivex0 p7zip-full gdisk dosfstools util-linux mtools syslinux syslinux-common
+sudo apt install python3-tk polkitd pkexec     # only for the graphical interface (pkexec: `policykit-1` on older releases)
 pip install .            # or run in place:  PYTHONPATH=src python3 -m toaster --help
 ```
 
 `syslinux` and `mtools` are only needed for `--boot bios` and for writing disk images.
 
-## Use
+## Graphical interface
+
+```sh
+toaster gui            # or: toaster-gui
+```
+
+One window, laid out like Rufus: pick an ISO (**Inspect** lists its editions), pick a USB drive or a
+disk image file, choose UEFI or legacy BIOS, then set options in three tabs (**Windows**, **Tweaks**,
+**Advanced**) and press **START**. Presets, profile load/save (File menu), a live log and a progress
+bar are built in. Dangerous choices ask for typed confirmation: the drive's device path before it is
+erased, and `erase disk 0` for auto-partition.
+
+The GUI never runs as root and contains no installer logic of its own; it drives the command line
+tool. Preparing the Windows files runs as you (and can be cancelled). Only the final write is
+elevated, through `pkexec` (your desktop's password prompt), and that step cannot be cancelled once
+it starts. Writing to a disk image needs no password at all. The GUI needs `python3-tk`; if it is
+missing, `toaster gui` tells you.
+
+## Command line
 
 ```sh
 toaster drives                              # list USB drives
@@ -129,8 +148,8 @@ retype the device path before erasing anything.
 
 ## Status: what has and hasn't been verified
 
-The automated suite (`PYTHONPATH=src python3 -m unittest discover -s tests -t .`, ~95 tests)
-uses the real `wimlib`, `hivex`, `sgdisk`, `mkfs.vfat`, `mtools` and `syslinux`.
+The automated suite (`PYTHONPATH=src python3 -m unittest discover -s tests -t .`, ~185 tests; run it
+under `xvfb-run` with a Python that has tkinter to include the 27 GUI tests) uses the real `wimlib`, `hivex`, `sgdisk`, `mkfs.vfat`, `mtools` and `syslinux`.
 
 Verified:
 - Answer-file generation (well-formed, correctly escaped, correct pass placement).
@@ -142,6 +161,8 @@ Verified:
   also boots under UEFI firmware. These use tiny stand-in programs for `bootmgr` and `bootx64.efi`.
 
 **Not verified** (needs hardware or Windows that were not available):
+- The GUI's `pkexec` elevation (no polkit agent in the development sandbox). The command it builds
+  is tested, and writing a disk image through the real window is tested, but not the password prompt.
 - Writing to a real USB block device (partition nodes + `mount`). The same code is exercised
   through disk images, but the mount path itself could not run in the development sandbox.
 - That a *real* Windows `bootmgr` starts under syslinux's `chain.c32 ntldr=/bootmgr` (a widely
