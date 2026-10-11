@@ -17,6 +17,7 @@ class WimImage:
     version: str = ""        # e.g. "10.0.26100"
     edition_id: str = ""
     total_bytes: int = 0
+    default_language: str = ""   # e.g. "en-US" (Windows images only)
 
 
 def _parse_info(text: str) -> list[WimImage]:
@@ -34,7 +35,7 @@ def _parse_info(text: str) -> list[WimImage]:
         images.append(WimImage(
             index=int(m.group(1)), name=field("Name"), description=field("Description"),
             architecture=field("Architecture"), version=ver, edition_id=field("Edition ID"),
-            total_bytes=int(field("Total Bytes") or 0),
+            total_bytes=int(field("Total Bytes") or 0), default_language=field("Default Language"),
         ))
     return images
 

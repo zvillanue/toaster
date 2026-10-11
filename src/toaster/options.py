@@ -70,6 +70,14 @@ class Customizations:
     # Directories holding extracted driver packages (.inf/.sys/.cat), made available to Setup and the new OS
     drivers: list[str] = field(default_factory=list)
     keep_drivers: bool = False            # leave C:\Drivers behind after installing them
+    # Unattended installation.
+    #   silent_install: answer the language, EULA, product-key, edition and account pages. The disk
+    #                   page is still shown, so nothing is erased without you choosing a disk.
+    #   auto_partition: ALSO erase disk 0 of the target PC and install there (UEFI/GPT layout).
+    silent_install: bool = False
+    auto_partition: bool = False
+    install_edition: int | None = None    # install image index (as shown by `toaster inspect`)
+    media_label: str = "WINSTALL"         # label of the install drive; used by the auto_partition safeguard
 
     def validate(self) -> None:
         for check in self.bypass_checks:
@@ -82,6 +90,15 @@ class Customizations:
                 raise OptionsError(str(e)) from None
         if any((not isinstance(i, int)) or i < 1 for i in self.editions):
             raise OptionsError("editions must be positive install image indices (see `toaster inspect`)")
+        if self.auto_partition and not self.silent_install:
+            raise OptionsError("auto_partition requires silent_install")
+        if self.install_edition is not None:
+            if not isinstance(self.install_edition, int) or self.install_edition < 1:
+                raise OptionsError("install_edition must be a positive install image index")
+            if self.editions and self.install_edition not in self.editions:
+                raise OptionsError(f"install_edition {self.install_edition} is not among the kept editions {self.editions}")
+        if not re.fullmatch(r"[A-Za-z0-9_ -]{1,11}", self.media_label):
+            raise OptionsError("media_label must be 1-11 characters: letters, digits, space, '_' or '-'")
         if self.keep_drivers and not self.drivers:
             raise OptionsError("keep_drivers requires drivers")
         if self.username is not None:

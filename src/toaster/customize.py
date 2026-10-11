@@ -119,19 +119,44 @@ def _install_operations(root: Path, opts: Customizations, report: Report, log: C
     return True
 
 
+def _resolve_install_index(root: Path, opts: Customizations, report: Report) -> int | None:
+    """Index of the image a silent install deploys, in the install image *as it is now* (after trimming)."""
+    if not opts.silent_install:
+        return None
+    install = (find_ci(root, "sources/install.wim") or find_ci(root, "sources/install.esd")
+               or find_ci(root, "sources/install.swm"))
+    if install is None:
+        report.warnings.append("No install image found; Setup will ask which edition to install")
+        return None
+    present = wim.images(install)
+    if opts.install_edition is not None:
+        kept = sorted(set(opts.editions))
+        index = kept.index(opts.install_edition) + 1 if kept else opts.install_edition   # trimming renumbers
+        if index > len(present):
+            raise ToolError(f"edition {opts.install_edition} does not exist (the image has {len(present)})")
+        return index
+    if len(present) == 1:
+        return 1
+    listing = ", ".join(f"{i.index}={i.name}" for i in present)
+    raise ToolError("a silent install needs to know which edition to deploy: pass --install-edition N "
+                    f"(or keep a single one with --edition N). Available: {listing}")
+
+
 # --- main entry -----------------------------------------------------------------------
 
 def customize_tree(root: Path, opts: Customizations, *, log: Callable[[str], None] = lambda m: None) -> Report:
     opts.validate()
     report = Report()
     boot_wim = find_ci(root, "sources/boot.wim")
-    setup_index, arch = 0, "x64"
+    setup_index, arch, setup_language = 0, "x64", "en-US"
 
     if boot_wim is not None:
         setup_index = wim.find_setup_image(boot_wim)
         info = next((i for i in wim.images(boot_wim) if i.index == setup_index), None)
         if info and info.architecture in WIM_ARCH:
             arch = WIM_ARCH[info.architecture]
+        if info and info.default_language:
+            setup_language = info.default_language
     else:
         report.warnings.append("sources/boot.wim not found; is this a Windows installation image?")
 
@@ -173,8 +198,18 @@ def customize_tree(root: Path, opts: Customizations, *, log: Callable[[str], Non
 
         # 4. answer file
         effective = dataclasses.replace(opts, offline_debloat=offline_done)
+        install_index = _resolve_install_index(root, opts, report)
+        if opts.silent_install:
+            report.actions.append(
+                f"Silent install: skips the language, EULA, edition and account pages "
+                f"(edition index {install_index}, language {opts.locale or setup_language})"
+                if install_index else "Silent install: skips the language, EULA and account pages")
+            if opts.auto_partition:
+                report.actions.append("AUTO-PARTITION: Setup will ERASE disk 0 of the target PC and install there "
+                                      "(only if the install drive is disk 1; otherwise the disk page is shown)")
         answer = build_unattend(effective, arch, pe_bypass=not bypass_in_registry,
-                                pe_driver_paths=pe_paths, os_drivers=bool(opts.drivers))
+                                pe_driver_paths=pe_paths, os_drivers=bool(opts.drivers),
+                                install_index=install_index, setup_language=setup_language)
         if answer is None:
             report.actions.append("No answer file needed")
         else:

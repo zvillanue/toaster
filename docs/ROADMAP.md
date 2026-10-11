@@ -6,7 +6,8 @@ Ordered roughly by value. `[Rufus]` = a feature Rufus has; `[new]` = beyond Rufu
 - [x] Legacy BIOS boot (MBR + syslinux `chain.c32` -> `bootmgr`) [Rufus]  (still to confirm with a real `bootmgr`)
 - [ ] UEFI:NTFS style booting for NTFS/exFAT media (no 4 GiB split needed) [Rufus]
 - [x] Secure Boot "Windows UEFI CA 2023" bootloaders: swap in `EFI_EX` files from `boot.wim` [Rufus]
-- [ ] Silent/unattended install option (auto-partition, with the disk-selection safeguard Rufus uses) [Rufus]
+- [x] Silent/unattended install: `--silent` (disk page kept) and opt-in `--auto-partition` with a disk-1 safeguard [Rufus]
+- [ ] Stronger auto-partition safeguard: pick the target by size/bus type rather than disk number [new]
 - [ ] Windows 11 24H2+ in-place upgrade bypass (Rufus ships a `setup.exe` wrapper; a Linux-side
       alternative is documenting `setup.exe /product server`) [Rufus]
 - [ ] Windows To Go [Rufus]

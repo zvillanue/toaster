@@ -44,6 +44,12 @@ def _add_customization_args(p: argparse.ArgumentParser) -> None:
                    help="use the 'Windows UEFI CA 2023' signed boot loaders (needs a firmware that trusts them)")
     g.add_argument("--drivers", action="append", default=[], metavar="DIR",
                    help="folder of extracted drivers for Setup and the new system (repeatable)")
+    g.add_argument("--silent", action="store_true", default=None,
+                   help="answer Setup's language, EULA, edition and account pages (you still choose the disk)")
+    g.add_argument("--auto-partition", action="store_true", default=None,
+                   help="DANGEROUS: with --silent, also ERASE disk 0 of the target PC and install there (UEFI/GPT)")
+    g.add_argument("--install-edition", type=int, metavar="N",
+                   help="install image index to deploy; needed with --silent when the image has several editions")
     g.add_argument("--keep-drivers", action="store_true", default=None, help="leave C:\\Drivers after installing them")
     g.add_argument("--save-profile", metavar="FILE", help="write the resulting options to a JSON profile")
 
@@ -62,6 +68,10 @@ def _options_from_args(a: argparse.Namespace) -> Customizations:
         value = getattr(a, attr)
         if value is not None:
             setattr(opts, attr, value)
+    for flag, attr in (("silent", "silent_install"), ("auto_partition", "auto_partition"),
+                       ("install_edition", "install_edition")):
+        if getattr(a, flag) is not None:
+            setattr(opts, attr, getattr(a, flag))
     opts.tweaks = list(dict.fromkeys([*opts.tweaks, *a.tweak]))
     opts.editions = sorted(set([*opts.editions, *a.edition]))
     opts.drivers = list(dict.fromkeys([*opts.drivers, *(str(Path(d).resolve()) for d in a.drivers)]))
@@ -97,6 +107,11 @@ def _describe(opts: Customizations) -> list[str]:
         lines.append("Keep only install image(s): " + ", ".join(map(str, opts.editions)))
     if opts.secureboot_2023:
         lines.append("2023-signed UEFI boot loaders")
+    if opts.silent_install:
+        lines.append("Silent install: language, EULA, edition and account pages are skipped"
+                     + (f" (edition {opts.install_edition})" if opts.install_edition else ""))
+    if opts.auto_partition:
+        lines.append("!! AUTO-PARTITION: the PC you install on will have DISK 0 ERASED without further questions")
     lines += [f"Drivers from {d}" for d in opts.drivers]
     return lines or ["(no customization)"]
 
@@ -131,7 +146,8 @@ def cmd_tweaks(a: argparse.Namespace) -> int:
 def cmd_unattend(a: argparse.Namespace) -> int:
     opts = _options_from_args(a)
     pe_paths = drivers.stage_drivers(opts.drivers, Path("/nonexistent"), copy=False).pe_paths if opts.drivers else []
-    result = build_unattend(opts, a.arch, pe_bypass=True, pe_driver_paths=pe_paths, os_drivers=bool(opts.drivers))
+    result = build_unattend(opts, a.arch, pe_bypass=True, pe_driver_paths=pe_paths, os_drivers=bool(opts.drivers),
+                           install_index=opts.install_edition)
     if result is None:
         print("Nothing to write: no options selected.", file=sys.stderr)
         return 1
@@ -215,6 +231,11 @@ def _resolve_target(a: argparse.Namespace) -> tuple[devices.Drive, bool]:
 
 def cmd_write(a: argparse.Namespace) -> int:
     opts = _options_from_args(a)
+    if opts.auto_partition and a.boot == "bios":
+        raise ToolError("--auto-partition lays the target disk out for UEFI (GPT) and cannot be combined "
+                        "with --boot bios; use --boot uefi")
+    opts.media_label = a.label.upper()
+    opts.validate()
     drive, existed = _resolve_target(a)
     source = Path(a.source)
     devices.check_target(drive, allow_fixed=a.allow_fixed)      # fail fast, before the slow part
@@ -228,6 +249,14 @@ def cmd_write(a: argparse.Namespace) -> int:
         print("Windows media options:")
         for line in _describe(opts):
             print(f"  - {line}")
+        if opts.auto_partition and not a.yes:
+            print("\n*** AUTO-PARTITION WARNING ***\n"
+                  "Booting this drive will ERASE DISK 0 of that PC and install Windows, with no further prompt\n"
+                  "if Setup finds this drive as disk 1. Disconnect any disk you care about first, and try it\n"
+                  "in a virtual machine before using it on real hardware.")
+            if input("Type 'erase disk 0' to accept: ").strip().lower() != "erase disk 0":
+                print("Aborted; nothing was written.")
+                return 1
         if existed and not a.yes:
             typed = input(f"\nThis replaces everything in {drive.path}. Type it again to confirm: ").strip()
             if typed != drive.path:

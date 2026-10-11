@@ -77,8 +77,69 @@ def _commands(parent: ET.Element, wrapper: str, item: str, field: str, cmds: lis
         _add(entry, field, cmd)
 
 
+def _disk_and_image(comp: ET.Element, opts: Customizations, install_index: int | None) -> None:
+    """Disk layout (auto_partition only) and which image to deploy, inside Microsoft-Windows-Setup.
+
+    Without auto_partition nothing here names a disk, so Setup still shows its "Where do you want to
+    install Windows?" page and the user chooses; only the edition page is skipped.
+    """
+    if opts.auto_partition:
+        dc = _add(comp, "DiskConfiguration")
+        _add(dc, "WillShowUI", "OnError")
+        if opts.disable_bitlocker:
+            _add(dc, "DisableEncryptedDiskProvisioning", "true")
+
+        # SAFEGUARD. Relabel partition 1 of disk 1, which is the install drive when the PC has
+        # exactly one internal disk (disk 0) plus this drive. If disk 1 or its partition 1 does not
+        # exist (for example a missing storage driver leaves the install drive as the only disk),
+        # this fails, and WillShowUI=OnError then shows the normal disk page instead of erasing
+        # anything. It must stay before the disk that gets wiped.
+        guard = _action(_add(dc, "Disk"), "modify")
+        _add(guard, "DiskID", "1")
+        mods = _add(guard, "ModifyPartitions")
+        mod = _action(_add(mods, "ModifyPartition"), "modify")
+        _add(mod, "Order", "1")
+        _add(mod, "PartitionID", "1")
+        _add(mod, "Label", opts.media_label.upper())
+
+        disk = _action(_add(dc, "Disk"))
+        _add(disk, "DiskID", "0")
+        _add(disk, "WillWipeDisk", "true")
+        creates = _add(disk, "CreatePartitions")
+        for order, (kind, size) in enumerate((("EFI", "260"), ("MSR", "16"), ("Primary", None)), 1):
+            part = _action(_add(creates, "CreatePartition"))
+            _add(part, "Order", str(order))
+            _add(part, "Type", kind)
+            if size:
+                _add(part, "Size", size)
+            else:
+                _add(part, "Extend", "true")
+        mods = _add(disk, "ModifyPartitions")
+        for order, (pid, label, fs, letter) in enumerate(((1, "System", "FAT32", None),
+                                                          (3, "Windows", "NTFS", "C")), 1):
+            mod = _action(_add(mods, "ModifyPartition"))
+            _add(mod, "Order", str(order))
+            _add(mod, "PartitionID", str(pid))
+            _add(mod, "Label", label)
+            if letter:
+                _add(mod, "Letter", letter)
+            _add(mod, "Format", fs)
+
+    image = _add(_add(comp, "ImageInstall"), "OSImage")
+    _add(image, "WillShowUI", "OnError" if opts.auto_partition else "Always")
+    if install_index is not None:
+        meta = _action(_add(_add(image, "InstallFrom"), "MetaData"))
+        _add(meta, "Key", "/IMAGE/INDEX")
+        _add(meta, "Value", str(install_index))
+    if opts.auto_partition:
+        to = _add(image, "InstallTo")
+        _add(to, "DiskID", "0")
+        _add(to, "PartitionID", "3")
+
+
 def build_unattend(opts: Customizations, arch: str = "x64", *, pe_bypass: bool = True,
-                   pe_driver_paths: Sequence[str] = (), os_drivers: bool = False) -> Unattend | None:
+                   pe_driver_paths: Sequence[str] = (), os_drivers: bool = False,
+                   install_index: int | None = None, setup_language: str = "en-US") -> Unattend | None:
     """Return the answer file for ``opts``, or None if nothing needs one.
 
     ``pe_bypass`` says whether the LabConfig values still need to be applied by
@@ -86,6 +147,8 @@ def build_unattend(opts: Customizations, arch: str = "x64", *, pe_bypass: bool =
     ``pe_driver_paths`` are folders (inside the Setup image, e.g. ``X:\\Drivers\\vmd``) that
     Windows PE should load drivers from; ``os_drivers`` installs the staged
     ``%SystemDrive%\\Drivers`` tree into the new system with pnputil.
+    ``install_index`` is the install image to deploy and ``setup_language`` the language Setup runs in;
+    both are only used for silent installs.
     """
     opts.validate()
     arch = ARCH_NAMES[arch]
@@ -97,16 +160,25 @@ def build_unattend(opts: Customizations, arch: str = "x64", *, pe_bypass: bool =
 
     # --- windowsPE ------------------------------------------------------
     bypass_in_answer = bool(opts.bypass_checks) and pe_bypass
-    needs_pe = bypass_in_answer or bool(pe_driver_paths)
+    silent = opts.silent_install
+    needs_pe = bypass_in_answer or silent or bool(pe_driver_paths)
     if needs_pe:
         pe = _settings(root, "windowsPE")
-    if bypass_in_answer:
+    if silent:
+        lang = opts.locale or setup_language
+        comp = _component(pe, "Microsoft-Windows-International-Core-WinPE", arch)
+        _add(_add(comp, "SetupUILanguage"), "UILanguage", lang)
+        for tag in ("InputLocale", "SystemLocale", "UILanguage", "UserLocale"):
+            _add(comp, tag, lang)
+    if bypass_in_answer or silent:
         comp = _component(pe, "Microsoft-Windows-Setup", arch)
         user = _add(comp, "UserData")
         _add(user, "AcceptEula", "true")
         _add(_add(user, "ProductKey"), "Key")      # Setup insists on a (blank) key element
+        if silent:
+            _disk_and_image(comp, opts, install_index)
         cmds = [f"reg add HKLM\\SYSTEM\\Setup\\LabConfig /v {BYPASS_CHECKS[c]} /t REG_DWORD /d 1 /f"
-                for c in opts.bypass_checks]
+                for c in opts.bypass_checks] if bypass_in_answer else []
         _commands(comp, "RunSynchronous", "RunSynchronousCommand", "Path", cmds)
     if pe_driver_paths:
         comp = _component(pe, "Microsoft-Windows-PnpCustomizationsWinPE", arch)
@@ -143,14 +215,18 @@ def build_unattend(opts: Customizations, arch: str = "x64", *, pe_bypass: bool =
     first_logon = list(user_cmds)
     if os_drivers and not opts.keep_drivers:
         first_logon.append('cmd /c rmdir /s /q "%SystemDrive%\\Drivers"')
-    shell_has_content = (opts.no_data_collection or opts.timezone or opts.username or first_logon)
+    shell_has_content = (opts.no_data_collection or silent or opts.timezone or opts.username or first_logon)
     oobe = _settings(root, "oobeSystem")
     if shell_has_content:
         comp = _component(oobe, "Microsoft-Windows-Shell-Setup", arch)
-        if opts.no_data_collection:
+        if opts.no_data_collection or silent:
             o = _add(comp, "OOBE")
             _add(o, "HideEULAPage", "true")
             _add(o, "ProtectYourPC", "3")          # 3 = do not enable any of the "recommended" privacy toggles
+            if silent:
+                # Without these OOBE can still stop on "connect to a network" / "sign in" pages.
+                _add(o, "HideOnlineAccountScreens", "true")
+                _add(o, "HideWirelessSetupInOOBE", "true")
         if opts.timezone:
             _add(comp, "TimeZone", opts.timezone)
         if opts.username:

@@ -33,6 +33,9 @@ sudo toaster write Win11.iso /dev/sdb --preset debloat --username alex --verify
 sudo toaster write Win11.iso /dev/sdb --boot bios --edition 6 --preset debloat --offline-debloat \
      --drivers ~/drivers/intel-vmd --secureboot-2023 --verify
 
+# Skip Setup's language / EULA / edition / account pages (you still pick the disk):
+sudo toaster write Win11.iso /dev/sdb --silent --install-edition 6 --username alex
+
 # No USB stick? Write a bootable disk image for a VM (no root needed)...
 toaster write Win11.iso win11.img --image-size 16G --boot bios --preset debloat
 qemu-system-x86_64 -enable-kvm -m 8G -drive file=win11.img,format=raw ...
@@ -63,6 +66,9 @@ Options can be saved and reused: `--save-profile my.json` / `--profile my.json`.
 | `--edition N` | Keep only these install images (repeatable; see `toaster inspect`) |
 | `--drivers DIR` | Folder of extracted drivers for Setup and the new system (repeatable) |
 | `--secureboot-2023` | Use the "Windows UEFI CA 2023" signed boot loaders |
+| `--silent` | Answer the language, EULA, product-key, edition and account pages. **You still choose the disk.** |
+| `--install-edition N` | Which install image `--silent` deploys (needed if the image has several; renumbering after `--edition` is handled) |
+| `--auto-partition` | **Dangerous.** With `--silent`, also erase disk 0 of the PC you install on. See below. |
 
 ## How it works
 
@@ -99,6 +105,24 @@ Options can be saved and reused: `--save-profile my.json` / `--profile my.json`.
    `--verify`, read back and checksummed). With `--boot bios` the MBR and partition boot sector
    come from syslinux, and syslinux's `chain.c32` starts Windows' `bootmgr`.
 
+### Silent install
+
+`--silent` is safe: it fills in the answers Setup would otherwise ask for, but it never names a
+disk, so Setup still shows "Where do you want to install Windows?" and nothing is erased until
+you choose. It implies the privacy opt-outs and hides the OOBE network and account pages (add
+`--username` to create the local account, or Windows will ask you for one). The language is read
+from the Setup image (`--locale` overrides it).
+
+`--auto-partition` goes further: Setup creates an EFI / MSR / Windows (NTFS) layout on **disk 0 of
+the PC you boot** and installs there without asking. It is opt-in, needs `--silent`, only works
+with `--boot uefi`, and `toaster write` makes you type `erase disk 0` unless you pass `--yes`.
+A safeguard stops it when the install drive is not disk 1: the answer file first relabels
+partition 1 of disk 1 (the install drive), and if that step fails Setup falls back to its normal
+disk page. That protects against the worst case, a missing storage driver leaving the install
+drive as the only disk Setup can see. It does **not** protect you if the PC has several internal
+disks or if Windows numbers the install drive as disk 0. **Disconnect disks you care about, and try
+it in a VM first.**
+
 Safety: toaster refuses any disk holding a mounted system path (`/`, `/boot`, `/home`, ...)
 even with `--allow-fixed`, refuses non-USB disks unless `--allow-fixed`, and requires you to
 retype the device path before erasing anything.
@@ -126,6 +150,11 @@ Verified:
   loaders behave as intended on current Windows 11 builds and real firmware. Settings follow
   Microsoft's documentation and Rufus's behaviour. **Please test in a VM or on a spare machine first.**
 - Offline edits were tested on synthetic hives; real hives are much larger.
+- Silent install: the answer file's structure and the safety invariants are tested (for example,
+  nothing that erases a disk is ever written unless `--auto-partition` is given), but Windows Setup
+  itself was not run. In particular unverified: that Setup skips each page as intended on current
+  Windows 11 builds, how Windows numbers disks in WinPE on your hardware, and that the safeguard
+  fails safe on every machine.
 
 Windows changes over time: Microsoft has already removed some bypasses in preview builds
 (for example `BypassNRO`). toaster also creates a local account through the answer file,
