@@ -8,7 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from toaster import bootcode, cli, devices, media, wim
+from toaster import bootcode, cli, devices, media, regpatch, wim
+from toaster.options import Customizations
 from toaster.tools import ToolError
 
 from .fakemedia import make_windows_tree
@@ -201,7 +202,6 @@ class CliWriteImageTests(unittest.TestCase):
 
     def pull(self, img, name):
         dest = self.tmp / ("pulled-" + name.replace("/", "_"))
-        run = __import__("toaster.tools", fromlist=["run"]).run
         with open(dest, "wb") as f:
             f.write(subprocess.run(["mcopy", "-i", f"{img}@@1048576", f"::{name}", "-"], capture_output=True,
                                    env={"MTOOLS_SKIP_CHECK": "1", "PATH": "/usr/bin:/bin"}, check=True).stdout)
@@ -218,8 +218,7 @@ class CliWriteImageTests(unittest.TestCase):
         # editions trimmed, tweaks applied offline, drivers + 2023 loaders present on the stick
         install = self.pull(img, "sources/install.wim")
         self.assertEqual([i.name for i in wim.images(install)], ["Windows 11 Home"])
-        with __import__("toaster.regpatch", fromlist=["Hive"]).Hive(
-                wim.extract(install, 1, "/Windows/System32/config/SOFTWARE", self.tmp)) as h:
+        with regpatch.Hive(wim.extract(install, 1, "/Windows/System32/config/SOFTWARE", self.tmp)) as h:
             self.assertEqual(h.get_value("Policies\\Microsoft\\Windows\\WindowsCopilot", "TurnOffWindowsCopilot"), 1)
         self.assertEqual(self.pull(img, "efi/boot/bootx64.efi").read_bytes(), b"2023-bootmgfw")
         self.assertEqual(self.pull(img, "sources/$OEM$/$1/Drivers/1-vmd/iaStorVD.inf").read_bytes(), b"[Version]")
@@ -256,6 +255,6 @@ class CliWriteImageTests(unittest.TestCase):
                                   "--secureboot-2023", "--tweak", "no-copilot", "--save-profile", prof,
                                   "-o", self.tmp / "a.xml")
         self.assertEqual(rc, 0, err)
-        loaded = __import__("toaster.options", fromlist=["Customizations"]).Customizations.load(prof)
+        loaded = Customizations.load(prof)
         self.assertEqual((loaded.editions, loaded.offline_debloat, loaded.secureboot_2023), ([2], True, True))
         self.assertEqual(loaded.drivers, [str(self.pack.resolve())])
