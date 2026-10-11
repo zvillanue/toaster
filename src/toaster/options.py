@@ -61,6 +61,15 @@ class Customizations:
     locale: str | None = None             # BCP-47 tag applied to input/system/user/UI, e.g. "en-GB"
     # Post-install tweaks (ids from toaster.tweaks)
     tweaks: list[str] = field(default_factory=list)
+    # Apply registry tweaks and file removals inside install.wim instead of at first boot. Reaches every
+    # account created later (not just the first one) but rewrites the large install image: slower.
+    offline_debloat: bool = False
+    editions: list[int] = field(default_factory=list)   # keep only these install.wim indices (empty = all)
+    # UEFI: replace the boot loaders with the 'Windows UEFI CA 2023' signed ones carried in boot.wim
+    secureboot_2023: bool = False
+    # Directories holding extracted driver packages (.inf/.sys/.cat), made available to Setup and the new OS
+    drivers: list[str] = field(default_factory=list)
+    keep_drivers: bool = False            # leave C:\Drivers behind after installing them
 
     def validate(self) -> None:
         for check in self.bypass_checks:
@@ -71,6 +80,10 @@ class Customizations:
                 tweaks.get(tweak_id)
             except ValueError as e:
                 raise OptionsError(str(e)) from None
+        if any((not isinstance(i, int)) or i < 1 for i in self.editions):
+            raise OptionsError("editions must be positive install image indices (see `toaster inspect`)")
+        if self.keep_drivers and not self.drivers:
+            raise OptionsError("keep_drivers requires drivers")
         if self.username is not None:
             self.username = sanitize_username(self.username)
 

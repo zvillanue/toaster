@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from . import tweaks
@@ -76,11 +77,15 @@ def _commands(parent: ET.Element, wrapper: str, item: str, field: str, cmds: lis
         _add(entry, field, cmd)
 
 
-def build_unattend(opts: Customizations, arch: str = "x64", *, pe_bypass: bool = True) -> Unattend | None:
+def build_unattend(opts: Customizations, arch: str = "x64", *, pe_bypass: bool = True,
+                   pe_driver_paths: Sequence[str] = (), os_drivers: bool = False) -> Unattend | None:
     """Return the answer file for ``opts``, or None if nothing needs one.
 
     ``pe_bypass`` says whether the LabConfig values still need to be applied by
     the answer file. Pass False when they were already written to boot.wim.
+    ``pe_driver_paths`` are folders (inside the Setup image, e.g. ``X:\\Drivers\\vmd``) that
+    Windows PE should load drivers from; ``os_drivers`` installs the staged
+    ``%SystemDrive%\\Drivers`` tree into the new system with pnputil.
     """
     opts.validate()
     arch = ARCH_NAMES[arch]
@@ -91,9 +96,11 @@ def build_unattend(opts: Customizations, arch: str = "x64", *, pe_bypass: bool =
     seen_machine: set[str] = set()
 
     # --- windowsPE ------------------------------------------------------
-    needs_pe = bool(opts.bypass_checks) and pe_bypass
+    bypass_in_answer = bool(opts.bypass_checks) and pe_bypass
+    needs_pe = bypass_in_answer or bool(pe_driver_paths)
     if needs_pe:
         pe = _settings(root, "windowsPE")
+    if bypass_in_answer:
         comp = _component(pe, "Microsoft-Windows-Setup", arch)
         user = _add(comp, "UserData")
         _add(user, "AcceptEula", "true")
@@ -101,16 +108,29 @@ def build_unattend(opts: Customizations, arch: str = "x64", *, pe_bypass: bool =
         cmds = [f"reg add HKLM\\SYSTEM\\Setup\\LabConfig /v {BYPASS_CHECKS[c]} /t REG_DWORD /d 1 /f"
                 for c in opts.bypass_checks]
         _commands(comp, "RunSynchronous", "RunSynchronousCommand", "Path", cmds)
+    if pe_driver_paths:
+        comp = _component(pe, "Microsoft-Windows-PnpCustomizationsWinPE", arch)
+        paths = _add(comp, "DriverPaths")
+        for key_value, path in enumerate(pe_driver_paths, 1):
+            entry = _action(_add(paths, "PathAndCredentials"))
+            entry.set(f"{{{WCM}}}keyValue", str(key_value))
+            _add(entry, "Path", path)
 
     # --- gather tweak commands -------------------------------------------
     if opts.local_account:
         machine_cmds.append('reg add "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\OOBE" '
                             "/v BypassNRO /t REG_DWORD /d 1 /f")
+    if os_drivers:
+        # Runs as SYSTEM during specialize, when the driver store is available but before first logon.
+        # Never fail the install over drivers: exit 0 whatever pnputil says (also if the folder is absent).
+        machine_cmds.append('cmd /c "pnputil /add-driver %SystemDrive%\\Drivers\\*.inf /subdirs /install & exit /b 0"')
     for tweak_id in opts.tweaks:
         t = tweaks.get(tweak_id)
-        for v in t.values:
-            (machine_cmds if v.hive == tweaks.HKLM else user_cmds).append(v.command())
-        machine_cmds.extend(t.machine_commands)
+        if not opts.offline_debloat:          # offline mode writes these into the image's hives instead
+            for v in t.values:
+                (machine_cmds if v.hive == tweaks.HKLM else user_cmds).append(v.command())
+        if not (opts.offline_debloat and t.offline_replaces_commands):
+            machine_cmds.extend(t.machine_commands)
     machine_cmds = [c for c in machine_cmds if not (c in seen_machine or seen_machine.add(c))]
 
     # --- specialize -----------------------------------------------------
@@ -121,6 +141,8 @@ def build_unattend(opts: Customizations, arch: str = "x64", *, pe_bypass: bool =
 
     # --- oobeSystem -----------------------------------------------------
     first_logon = list(user_cmds)
+    if os_drivers and not opts.keep_drivers:
+        first_logon.append('cmd /c rmdir /s /q "%SystemDrive%\\Drivers"')
     shell_has_content = (opts.no_data_collection or opts.timezone or opts.username or first_logon)
     oobe = _settings(root, "oobeSystem")
     if shell_has_content:

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 
-from . import __version__, devices, media, tweaks
+from . import __version__, devices, drivers, media, tweaks
 from .customize import customize_tree
 from .options import BYPASS_CHECKS, PRESETS, Customizations, OptionsError
 from .tools import ToolError
@@ -35,6 +36,15 @@ def _add_customization_args(p: argparse.ArgumentParser) -> None:
     g.add_argument("--timezone", metavar="NAME", help='Windows time-zone name, e.g. "Pacific Standard Time"')
     g.add_argument("--locale", metavar="TAG", help="language/region tag applied to input, system, user and UI, e.g. en-GB")
     g.add_argument("--tweak", action="append", default=[], metavar="ID", help="enable a tweak (repeatable; see `toaster tweaks`)")
+    g.add_argument("--offline-debloat", action="store_true", default=None,
+                   help="apply tweaks inside install.wim (reaches every new account; slower)")
+    g.add_argument("--edition", action="append", type=int, default=[], metavar="N",
+                   help="keep only this install image index (repeatable; see `toaster inspect`)")
+    g.add_argument("--secureboot-2023", action="store_true", default=None,
+                   help="use the 'Windows UEFI CA 2023' signed boot loaders (needs a firmware that trusts them)")
+    g.add_argument("--drivers", action="append", default=[], metavar="DIR",
+                   help="folder of extracted drivers for Setup and the new system (repeatable)")
+    g.add_argument("--keep-drivers", action="store_true", default=None, help="leave C:\\Drivers after installing them")
     g.add_argument("--save-profile", metavar="FILE", help="write the resulting options to a JSON profile")
 
 
@@ -48,11 +58,13 @@ def _options_from_args(a: argparse.Namespace) -> Customizations:
     elif a.bypass:
         opts.bypass_checks = [x.strip() for x in a.bypass.split(",") if x.strip()]
     for attr in ("local_account", "no_data_collection", "disable_bitlocker", "offline_internal_drives",
-                 "username", "timezone", "locale"):
+                 "username", "timezone", "locale", "offline_debloat", "secureboot_2023", "keep_drivers"):
         value = getattr(a, attr)
         if value is not None:
             setattr(opts, attr, value)
     opts.tweaks = list(dict.fromkeys([*opts.tweaks, *a.tweak]))
+    opts.editions = sorted(set([*opts.editions, *a.edition]))
+    opts.drivers = list(dict.fromkeys([*opts.drivers, *(str(Path(d).resolve()) for d in a.drivers)]))
     opts.validate()
     if a.save_profile:
         Path(a.save_profile).write_text(opts.to_json())
@@ -79,6 +91,13 @@ def _describe(opts: Customizations) -> list[str]:
     if opts.locale:
         lines.append(f"Locale: {opts.locale}")
     lines += [f"Tweak: {tweaks.get(t).title}" for t in opts.tweaks]
+    if opts.tweaks and opts.offline_debloat:
+        lines.append("Tweaks are applied inside install.wim (all new accounts)")
+    if opts.editions:
+        lines.append("Keep only install image(s): " + ", ".join(map(str, opts.editions)))
+    if opts.secureboot_2023:
+        lines.append("2023-signed UEFI boot loaders")
+    lines += [f"Drivers from {d}" for d in opts.drivers]
     return lines or ["(no customization)"]
 
 
@@ -110,7 +129,9 @@ def cmd_tweaks(a: argparse.Namespace) -> int:
 
 
 def cmd_unattend(a: argparse.Namespace) -> int:
-    result = build_unattend(_options_from_args(a), a.arch, pe_bypass=True)
+    opts = _options_from_args(a)
+    pe_paths = drivers.stage_drivers(opts.drivers, Path("/nonexistent"), copy=False).pe_paths if opts.drivers else []
+    result = build_unattend(opts, a.arch, pe_bypass=True, pe_driver_paths=pe_paths, os_drivers=bool(opts.drivers))
     if result is None:
         print("Nothing to write: no options selected.", file=sys.stderr)
         return 1
@@ -175,27 +196,47 @@ def _progress(phase: str, done: int, total: int) -> None:
     sys.stderr.flush()
 
 
+def parse_size(text: str) -> int:
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KMGT]?)(?:i?B)?", text.strip(), re.IGNORECASE)
+    if not m:
+        raise ToolError(f"cannot understand size '{text}' (examples: 8G, 512M)")
+    return int(float(m.group(1)) * 1024 ** "BKMGT".index(m.group(2).upper() or "B"))
+
+
+def _resolve_target(a: argparse.Namespace) -> tuple[devices.Drive, bool]:
+    """The drive to write to, and whether it already existed (so overwriting needs confirmation)."""
+    size = parse_size(a.image_size) if a.image_size else None
+    path = Path(a.device)
+    existed = path.exists()
+    if size or path.is_file():
+        return devices.image_drive(a.device, size), existed
+    return devices.find(a.device), True
+
+
 def cmd_write(a: argparse.Namespace) -> int:
     opts = _options_from_args(a)
-    drive = devices.find(a.device)
+    drive, existed = _resolve_target(a)
     source = Path(a.source)
     devices.check_target(drive, allow_fixed=a.allow_fixed)      # fail fast, before the slow part
     with tempfile.TemporaryDirectory(prefix="toaster-", dir=a.workdir) as work:
         tree = Path(work) / "tree"
         _prepare(source, opts, tree)
         devices.check_target(drive, allow_fixed=a.allow_fixed, needed_bytes=media.tree_size(tree))
-        print(f"\nAbout to ERASE {drive.path}: {drive.label}, {_gib(drive.size)}")
+        what = "disk image" if drive.is_image else "ERASE"
+        print(f"\nAbout to write ({what}) {drive.path}: {drive.label}, {_gib(drive.size)}, "
+              f"{'legacy BIOS + UEFI (MBR)' if a.boot == 'bios' else 'UEFI (GPT)'}")
         print("Windows media options:")
         for line in _describe(opts):
             print(f"  - {line}")
-        if not a.yes:
-            typed = input(f"\nType the device path ({drive.path}) to confirm: ").strip()
+        if existed and not a.yes:
+            typed = input(f"\nThis replaces everything in {drive.path}. Type it again to confirm: ").strip()
             if typed != drive.path:
                 print("Aborted; nothing was written.")
                 return 1
-        media.write_tree_to_device(tree, drive, label=a.label, allow_fixed=a.allow_fixed,
+        media.write_tree_to_device(tree, drive, label=a.label, boot=a.boot, allow_fixed=a.allow_fixed,
                                    verify=a.verify, progress=_progress)
-    print(f"Done. {drive.path} is ready to boot (UEFI).")
+    modes = "legacy BIOS and UEFI" if a.boot == "bios" else "UEFI"
+    print(f"Done. {drive.path} is ready to boot ({modes}).")
     return 0
 
 
@@ -220,8 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("source", help="Windows ISO or extracted folder"); s.add_argument("--out", required=True)
     _add_customization_args(s); s.set_defaults(func=cmd_prepare)
 
-    s = sub.add_parser("write", help="customize an ISO and write it to a USB drive (needs root)")
-    s.add_argument("source", help="Windows ISO or extracted folder"); s.add_argument("device", help="whole disk, e.g. /dev/sdb")
+    s = sub.add_parser("write", help="customize an ISO and write it to a USB drive or disk image (USB needs root)")
+    s.add_argument("source", help="Windows ISO or extracted folder"); s.add_argument("device", help="whole disk (/dev/sdb) or a disk image file")
+    s.add_argument("--boot", choices=["uefi", "bios"], default="uefi",
+                   help="uefi: GPT (default). bios: MBR with syslinux boot code; boots legacy BIOS and UEFI")
+    s.add_argument("--image-size", metavar="SIZE", help="treat DEVICE as a disk image file, creating it at this size (e.g. 8G)")
     s.add_argument("--label", default="WINSTALL"); s.add_argument("--workdir", help="where to stage files (needs ~1.3x the ISO size)")
     s.add_argument("--verify", action="store_true", help="re-read the drive and compare checksums")
     s.add_argument("--allow-fixed", action="store_true", help="permit a non-removable disk (still never the system disk)")

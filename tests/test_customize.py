@@ -41,7 +41,8 @@ class CustomizeTreeTests(unittest.TestCase):
         customize_tree(self.root, Customizations(local_account=False))
         with tempfile.TemporaryDirectory() as t:
             hive = wim.extract(self.boot, 1, SYSTEM_HIVE_IN_WIM, Path(t))
-            self.assertNotEqual(regpatch.run(["hivexget", hive, "\\Setup"], check=False).returncode, 0)
+            with regpatch.Hive(hive) as h:
+                self.assertEqual(h.find("Setup"), 0)
 
     def test_appraiserres_replaced_with_empty_file(self):
         customize_tree(self.root, Customizations(local_account=False))
@@ -109,20 +110,53 @@ class RegpatchTests(unittest.TestCase):
         self.hive = Path(self._tmp.name) / "SYSTEM"
         self.hive.write_bytes(build_minimal_hive())
 
+    def hivexget(self, key, name):
+        # Independent reader (the hivex CLI) so we are not just trusting our own bindings.
+        from toaster.tools import run
+        return run(["hivexget", self.hive, "\\" + key, name]).stdout.strip()
+
     def test_multiple_values_all_survive(self):
         regpatch.set_dwords(self.hive, "Setup\\LabConfig", {"A": 1, "B": 1, "C": 1})
         for n in "ABC":
-            self.assertEqual(regpatch.get_value(self.hive, "Setup\\LabConfig", n), "1")
+            self.assertEqual(self.hivexget("Setup\\LabConfig", n), "1")
 
     def test_second_call_merges_instead_of_clobbering(self):
         regpatch.set_dwords(self.hive, "Setup\\LabConfig", {"A": 1})
         regpatch.set_dwords(self.hive, "Setup\\LabConfig", {"B": 1, "A": 0})
-        self.assertEqual(regpatch.get_value(self.hive, "Setup\\LabConfig", "A"), "0")
-        self.assertEqual(regpatch.get_value(self.hive, "Setup\\LabConfig", "B"), "1")
+        self.assertEqual(self.hivexget("Setup\\LabConfig", "A"), "0")
+        self.assertEqual(self.hivexget("Setup\\LabConfig", "B"), "1")
 
-    def test_refuses_to_destroy_non_dword_values(self):
-        from toaster.tools import ToolError, run
-        run(["hivexsh", "-w", self.hive], input="add K\ncd K\nsetval 1\nS\nstring:keep\ncommit\n")
+    def test_other_value_types_in_the_key_are_preserved(self):
+        with regpatch.Hive(self.hive, write=True) as h:
+            h.set_value("K", "S", "REG_SZ", "keep me")
+            h.set_value("K", "E", "REG_EXPAND_SZ", "%SystemRoot%\\x")
+        regpatch.set_dwords(self.hive, "K", {"A": 1})
+        self.assertEqual(self.hivexget("K", "S"), "keep me")
+        self.assertEqual(self.hivexget("K", "E"), "%SystemRoot%\\x")
+        self.assertEqual(self.hivexget("K", "A"), "1")
+
+    def test_default_value_and_string_roundtrip(self):
+        with regpatch.Hive(self.hive, write=True) as h:
+            h.set_value("Software\\Classes\\CLSID\\{x}\\InprocServer32", "", "REG_SZ", "")
+        with regpatch.Hive(self.hive) as h:
+            self.assertEqual(h.get_value("Software\\Classes\\CLSID\\{x}\\InprocServer32", ""), "")
+            self.assertIsNone(h.get_value("Software\\Classes\\CLSID\\{x}\\InprocServer32", "nope"))
+
+    def test_key_lookup_is_case_insensitive(self):
+        regpatch.set_dwords(self.hive, "Software\\Policies\\Microsoft", {"V": 7})
+        with regpatch.Hive(self.hive, write=True) as h:
+            h.set_value("SOFTWARE\\policies\\MICROSOFT", "W", "REG_DWORD", 8)
+        self.assertEqual(self.hivexget("Software\\Policies\\Microsoft", "V"), "7")
+        self.assertEqual(self.hivexget("Software\\Policies\\Microsoft", "W"), "8")
+
+    def test_exception_inside_context_does_not_commit(self):
+        with self.assertRaises(RuntimeError), regpatch.Hive(self.hive, write=True) as h:
+            h.set_value("Gone", "X", "REG_DWORD", 1)
+            raise RuntimeError("abort")
+        with regpatch.Hive(self.hive) as h:
+            self.assertEqual(h.find("Gone"), 0)
+
+    def test_missing_hive_gives_clean_error(self):
+        from toaster.tools import ToolError
         with self.assertRaises(ToolError):
-            regpatch.set_dwords(self.hive, "K", {"A": 1})
-        self.assertEqual(regpatch.get_value(self.hive, "K", "S"), "keep")
+            regpatch.Hive(Path(self._tmp.name) / "nope")

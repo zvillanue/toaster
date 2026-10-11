@@ -3,9 +3,9 @@
 Ordered roughly by value. `[Rufus]` = a feature Rufus has; `[new]` = beyond Rufus.
 
 ## Next: close the gaps with Rufus
-- [ ] Legacy BIOS boot (MBR + active FAT32 partition with a Windows boot sector) [Rufus]
+- [x] Legacy BIOS boot (MBR + syslinux `chain.c32` -> `bootmgr`) [Rufus]  (still to confirm with a real `bootmgr`)
 - [ ] UEFI:NTFS style booting for NTFS/exFAT media (no 4 GiB split needed) [Rufus]
-- [ ] Secure Boot "Windows UEFI CA 2023" bootloaders: swap in `EFI_EX` files from `boot.wim` [Rufus]
+- [x] Secure Boot "Windows UEFI CA 2023" bootloaders: swap in `EFI_EX` files from `boot.wim` [Rufus]
 - [ ] Silent/unattended install option (auto-partition, with the disk-selection safeguard Rufus uses) [Rufus]
 - [ ] Windows 11 24H2+ in-place upgrade bypass (Rufus ships a `setup.exe` wrapper; a Linux-side
       alternative is documenting `setup.exe /product server`) [Rufus]
@@ -14,15 +14,18 @@ Ordered roughly by value. `[Rufus]` = a feature Rufus has; `[new]` = beyond Rufu
 - [ ] Copy host locale / time zone automatically (needs Linux tz -> Windows tz map) [Rufus]
 
 ## New: things Rufus doesn't do
-- [ ] **Offline debloat of `install.wim`**: delete provisioned AppX packages and edit the
-      *Default User* hive (`Users/Default/NTUSER.DAT`) so per-user tweaks apply to every new
-      account, not just the first one that logs on. [new]
-- [ ] Driver injection into `boot.wim` / `install.wim` (Intel RST/VMD, NVMe, USB) so Setup
-      can see disks on newer hardware [new]
+- [x] **Offline tweaks in `install.wim`**: registry values written to the SOFTWARE/SYSTEM/Default User
+      hives so they apply to every new account [new]
+- [ ] Offline removal of provisioned AppX packages (needs a safe way to keep the AppRepository
+      database consistent from Linux; today this is done at install time) [new]
+- [x] Driver injection: drivers in `boot.wim` for Setup, plus `pnputil` install into the new system [new]
+- [ ] Real DriverStore injection into `install.wim` (needs the DRIVERS hive format; DISM's behaviour) [new]
 - [ ] Wi-Fi profile injection so Setup/OOBE has network without prompting [new]
 - [ ] User-supplied scripts run at first logon (`--first-logon script.ps1`) [new]
-- [ ] Edition control: remove `ei.cfg`/pick Home vs Pro, trim the image to one edition [new]
-- [ ] Emit a customized *ISO* (xorriso) for VMs instead of a USB [new]
+- [x] Edition control: trim the image to chosen editions [new]
+- [ ] Edition prompt control: `ei.cfg`/`pid.txt` handling [new]
+- [x] Write a bootable disk *image* for VMs instead of a USB [new]
+- [ ] Emit a customized *ISO* (xorriso) [new]
 - [ ] Download official ISOs from Microsoft with hash verification [Rufus has this via Fido]
 - [ ] `toaster explain`: describe in plain English what a profile will change [new]
 - [ ] Profile sharing: signed/versioned JSON profiles, `toaster diff a.json b.json` [new]

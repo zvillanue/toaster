@@ -14,6 +14,9 @@ PACKAGES = {
     "sgdisk": "gdisk",
     "mkfs.vfat": "dosfstools",
     "lsblk": "util-linux",
+    "syslinux": "syslinux syslinux-common",
+    "mcopy": "mtools",
+    "mmd": "mtools",
 }
 
 
@@ -29,9 +32,10 @@ def require(*names: str) -> None:
                         f"  Debian/Ubuntu: sudo apt install {' '.join(pkgs)}")
 
 
-def run(cmd: list[str | Path], *, input: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
+def run(cmd: list[str | Path], *, input: str | None = None, check: bool = True,
+        env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     try:
-        proc = subprocess.run([str(c) for c in cmd], input=input, capture_output=True, text=True)
+        proc = subprocess.run([str(c) for c in cmd], input=input, capture_output=True, text=True, env=env)
     except FileNotFoundError:
         raise ToolError(f"{cmd[0]}: command not found") from None
     if check and proc.returncode != 0:

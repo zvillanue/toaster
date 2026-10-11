@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 
 from .tools import ToolError, require, run
@@ -24,8 +25,12 @@ class Drive:
     mountpoints: list[str] = field(default_factory=list)   # of the disk and all its partitions
 
     @property
+    def is_image(self) -> bool:
+        return self.kind == "image"
+
+    @property
     def is_removable(self) -> bool:
-        return self.removable or self.hotplug or self.transport == "usb"
+        return self.is_image or self.removable or self.hotplug or self.transport == "usb"
 
     @property
     def holds_system(self) -> bool:
@@ -84,6 +89,21 @@ def check_target(drive: Drive, *, allow_fixed: bool = False, needed_bytes: int =
     if needed_bytes and drive.size < needed_bytes:
         raise ToolError(f"{drive.path} is {drive.size / 2**30:.1f} GiB but the image needs "
                         f"about {needed_bytes / 2**30:.1f} GiB")
+
+
+def image_drive(path: str, create_size: int | None = None) -> Drive:
+    """A regular file used as a virtual disk (for VMs, or to inspect the result without a USB stick)."""
+    if not os.path.exists(path):
+        if not create_size:
+            raise ToolError(f"{path} does not exist (give --image-size to create a disk image)")
+        with open(path, "wb") as f:
+            f.truncate(create_size)
+    elif not os.path.isfile(path):
+        raise ToolError(f"{path} is not a regular file")
+    elif create_size and os.path.getsize(path) < create_size:
+        with open(path, "r+b") as f:
+            f.truncate(create_size)
+    return Drive(path=path, size=os.path.getsize(path), model="disk image", kind="image")
 
 
 def find(path: str) -> Drive:

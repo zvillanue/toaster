@@ -71,11 +71,34 @@ def _q(path: str | Path) -> str:
     return '"' + str(path).replace('"', '\\"') + '"'
 
 
-def update(wim: Path, index: int, adds: dict[str, Path]) -> None:
-    """Add or replace files in an image: {path inside image: local source file}."""
+def extract_tree(wim: Path, index: int, wim_paths: list[str], dest_dir: Path) -> None:
+    """Extract files or directories (each lands in dest_dir under its own name). Missing paths are skipped."""
     require("wimlib-imagex")
-    script = "".join(f"add {_q(src)} {_q(dst)}\n" for dst, src in adds.items())
-    run(["wimlib-imagex", "update", wim, str(index)], input=script)
+    run(["wimlib-imagex", "extract", wim, str(index), *wim_paths, f"--dest-dir={dest_dir}",
+         "--no-acls", "--nullglob"])
+
+
+def update(wim: Path, index: int, adds: dict[str, Path] | None = None, deletes: list[str] | None = None) -> None:
+    """Modify an image in place: add/replace {path inside image: local file or directory}, delete paths."""
+    require("wimlib-imagex")
+    script = "".join(f"delete --force --recursive {_q(p)}\n" for p in deletes or [])
+    script += "".join(f"add {_q(src)} {_q(dst)}\n" for dst, src in (adds or {}).items())
+    if script:
+        run(["wimlib-imagex", "update", wim, str(index)], input=script)
+
+
+def image_count(wim: Path) -> int:
+    return len(images(wim))
+
+
+def export(src: Path, indices: list[int], dest: Path, *, compress: str | None = None) -> None:
+    """Copy the chosen images into a new WIM at ``dest`` (created, or appended to if it exists)."""
+    require("wimlib-imagex")
+    for i in indices:
+        cmd: list[str | Path] = ["wimlib-imagex", "export", src, str(i), dest]
+        if compress:
+            cmd.append(f"--compress={compress}")
+        run(cmd)
 
 
 def split(wim: Path, dest_swm: Path, part_mib: int = 3800) -> None:

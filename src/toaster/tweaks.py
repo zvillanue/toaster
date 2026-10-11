@@ -42,6 +42,10 @@ class Tweak:
     category: str
     values: tuple[RegValue, ...] = ()
     machine_commands: tuple[str, ...] = ()   # run during specialize (as SYSTEM)
+    # Files to delete from the image when applying offline (paths inside the install image).
+    offline_delete: tuple[str, ...] = ()
+    # True when offline_delete fully replaces machine_commands, so the latter are skipped offline.
+    offline_replaces_commands: bool = False
     edition_note: str = ""
     in_debloat_preset: bool = True
     tags: tuple[str, ...] = field(default=(), compare=False)
@@ -67,7 +71,9 @@ TWEAKS: tuple[Tweak, ...] = (
               f'{_POWERSHELL} "Remove-Item -Path $env:SystemRoot\\System32\\OneDriveSetup.exe '
               f'-Force -Confirm:$false -ErrorAction SilentlyContinue; Remove-Item -Path '
               f'$env:SystemRoot\\SysWOW64\\OneDriveSetup.exe -Force -Confirm:$false -ErrorAction SilentlyContinue"',
-          )),
+          ),
+          offline_delete=("/Windows/System32/OneDriveSetup.exe", "/Windows/SysWOW64/OneDriveSetup.exe"),
+          offline_replaces_commands=True),
     Tweak("no-outlook-teams", "Remove the new Outlook and consumer Teams packages", "Bloat",
           machine_commands=(*_appx_removal("*Outlook*"), *_appx_removal("*Teams*")),
           values=(RegValue(HKLM, "Software\\Microsoft\\Windows\\CurrentVersion\\Communications",
@@ -119,6 +125,32 @@ def get(tweak_id: str) -> Tweak:
         return _BY_ID[tweak_id]
     except KeyError:
         raise ValueError(f"unknown tweak '{tweak_id}' (see `toaster tweaks`)") from None
+
+
+# Where an HKLM path lives when the image's hives are loaded individually.
+OFFLINE_HIVES = {"software": "/Windows/System32/config/SOFTWARE",
+                 "system": "/Windows/System32/config/SYSTEM",
+                 "user": "/Users/Default/NTUSER.DAT"}
+
+
+def offline_target(v: RegValue) -> tuple[str, str]:
+    """(hive id, key path inside that hive) for applying ``v`` to an offline image.
+
+    HKLM\\Software\\X -> SOFTWARE hive, key X; HKLM\\System\\CurrentControlSet\\X -> SYSTEM hive,
+    ControlSet001\\X; HKCU\\X -> the Default User hive, so every account created later inherits it.
+    """
+    parts = v.key.split("\\", 1)
+    head, rest = parts[0].lower(), (parts[1] if len(parts) > 1 else "")
+    if v.hive == HKCU:
+        return "user", v.key
+    if head == "software":
+        return "software", rest
+    if head == "system":
+        sub = rest.split("\\", 1)
+        if sub[0].lower() == "currentcontrolset":
+            return "system", "ControlSet001" + ("\\" + sub[1] if len(sub) > 1 else "")
+        return "system", rest
+    raise ValueError(f"cannot map {v.hive}\\{v.key} to an offline hive")
 
 
 def debloat_preset() -> list[str]:
