@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=toaster
+GenericName=Windows install media creator
+Comment=Create Windows 11 install USB drives with the intrusive parts removed
+Exec=toaster-gui
+Icon=drive-removable-media-usb
+Terminal=false
+Categories=System;Utility;
+Keywords=windows;usb;iso;installer;rufus;
